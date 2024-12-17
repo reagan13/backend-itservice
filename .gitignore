@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+# Build and output
+dist/
+.next/
+# System and IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+# Logs and env
+*.log
+.env
