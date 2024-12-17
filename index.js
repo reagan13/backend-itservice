@@ -43,7 +43,7 @@ const connection = mysql.createConnection({
 /// Function to get a connection from the pool
 function getConnectionWithRetry() {
 	return new Promise((resolve, reject) => {
-		pool.getConnection((err, connection) => {
+		connection.getConnection((err, connection) => {
 			if (err) {
 				console.error("Error getting connection from pool:", err);
 				setTimeout(() => {
