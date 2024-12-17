@@ -35,17 +35,45 @@ const connection = mysql.createConnection({
 	user: process.env.DB_USER,
 	password: process.env.DB_PASSWORD,
 	database: process.env.DB_NAME,
+	waitForConnections: true,
+	connectionLimit: 10,
+	queueLimit: 0,
 });
 
-// Connect to MySQL
-connection.connect((err) => {
-	if (err) {
-		console.error("Error connecting to MySQL:", err.stack);
-		return;
+/// Function to get a connection from the pool
+function getConnectionWithRetry() {
+	return new Promise((resolve, reject) => {
+		pool.getConnection((err, connection) => {
+			if (err) {
+				console.error("Error getting connection from pool:", err);
+				setTimeout(() => {
+					getConnectionWithRetry().then(resolve).catch(reject); // Retry after 5 seconds
+				}, 5000);
+			} else {
+				resolve(connection); // Return the connection to be used
+			}
+		});
+	});
+}
+// Example query function with retry logic
+async function runQuery() {
+	try {
+		const connection = await getConnectionWithRetry();
+		connection.query("SELECT * FROM your_table", (err, results) => {
+			if (err) {
+				console.error("Query error:", err);
+			} else {
+				console.log("Query results:", results);
+			}
+			connection.release(); // Release connection back to the pool
+		});
+	} catch (error) {
+		console.error("Failed to get a connection:", error);
 	}
-	console.log("Connected to MySQL as ID", connection.threadId);
-});
+}
 
+// Run the query
+runQuery();
 // Start the server
 app.listen(PORT, () => {
 	console.log(`Server is running on port ${PORT}`);
