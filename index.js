@@ -8,38 +8,53 @@ const cors = require("cors");
 require("dotenv").config(); // Load environment variables from .env file
 
 app.use(express.json()); // Add this to parse JSON
+
+// const corsOptions = {
+// 	origin: [
+// 		"http://localhost:3000",
+// 		"https://it-services-nkvo.onrender.com",
+// 		"https://backend-itservices.onrender.com",
+// 		"http://127.0.0.1:5500",
+// 	], // Trusted origins
+// 	methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+// 	allowedHeaders: ["Content-Type", "Authorization"],
+// 	credentials: true,
+// 	optionsSuccessStatus: 200,
+// };
+
+// // Apply CORS middleware
+// app.use(cors(corsOptions));
 app.use(cors());
+
+// Parse incoming JSON requests
 app.use(bodyParser.json());
 
-// Create the MySQL connection pool
-const pool = mysql.createPool({
+// Create the MySQL connection
+const connection = mysql.createConnection({
 	host: process.env.DB_HOST,
 	user: process.env.DB_USER,
 	password: process.env.DB_PASSWORD,
 	database: process.env.DB_NAME,
-	waitForConnections: true,
-	connectionLimit: 10,
-	queueLimit: 0,
 });
 
-// Function to get a connection from the pool
-function getConnectionWithRetry() {
-	return new Promise((resolve, reject) => {
-		pool.getConnection((err, connection) => {
-			if (err) {
-				console.error("Error getting connection from pool:", err);
-				setTimeout(() => {
-					getConnectionWithRetry().then(resolve).catch(reject); // Retry after 5 seconds
-				}, 5000);
-			} else {
-				resolve(connection); // Return the connection to be used
-			}
-		});
-	});
-}
+// Connect to MySQL
+connection.connect((err) => {
+	if (err) {
+		console.error("Error connecting to MySQL:", err.stack);
+		return;
+	}
+	console.log("Connected to MySQL as ID", connection.threadId);
+});
 
-// User Signup API Endpoint
-app.post("/api/signup", async (req, res) => {
+// Start the server
+app.listen(PORT, () => {
+	console.log(`Server is running on port ${PORT}`);
+});
+
+// User
+// signup
+// Signup API Endpoint
+app.post("/api/signup", (req, res) => {
 	const { first_name, last_name, email, password, confirm_password } = req.body;
 
 	// Basic validation
@@ -52,43 +67,54 @@ app.post("/api/signup", async (req, res) => {
 		return res.status(400).json({ error: "Passwords do not match" });
 	}
 
-	const connection = await getConnectionWithRetry();
-	try {
-		// Check if email already exists
-		const checkEmailQuery = "SELECT * FROM users WHERE email = ?";
-		const [results] = await connection.query(checkEmailQuery, [email]);
+	// Check if email already exists
+	const checkEmailQuery = "SELECT * FROM users WHERE email = ?";
+	connection.query(checkEmailQuery, [email], (err, results) => {
+		if (err) {
+			return res
+				.status(500)
+				.json({ error: "Database error", details: err.message });
+		}
 
 		if (results.length > 0) {
 			return res.status(400).json({ error: "Email already in use" });
 		}
 
 		// Hash the password before saving
-		const hashedPassword = await bcrypt.hash(password, 10);
+		bcrypt.hash(password, 10, (err, hashedPassword) => {
+			if (err) {
+				return res.status(500).json({ error: "Error hashing password" });
+			}
 
-		// Insert new user into the database
-		const insertQuery =
-			"INSERT INTO users (first_name, last_name, email, password_hash) VALUES (?, ?, ?, ?)";
-		const [insertResult] = await connection.query(insertQuery, [
-			first_name,
-			last_name,
-			email,
-			hashedPassword,
-		]);
+			// Insert new user into the database
+			const insertQuery =
+				"INSERT INTO users (first_name, last_name, email, password_hash) VALUES (?, ?, ?, ?)";
 
-		res.status(201).json({
-			message: "User  successfully created",
-			userId: insertResult.insertId,
+			connection.query(
+				insertQuery,
+				[first_name, last_name, email, hashedPassword],
+				(err, results) => {
+					if (err) {
+						return res
+							.status(500)
+							.json({ error: "Error saving user", details: err.message });
+					}
+
+					res.status(201).json({
+						message: "User successfully created",
+						userId: results.insertId,
+					});
+				}
+			);
 		});
-	} catch (err) {
-		console.error("Database error:", err);
-		res.status(500).json({ error: "Database error", details: err.message });
-	} finally {
-		connection.release(); // Release connection back to the pool
-	}
+	});
 });
 
-// User Sign-In API Endpoint
-app.post("/api/signin", async (req, res) => {
+// Login
+// Sign-In API Endpoint
+app.post("/api/signin", (req, res) => {
+	console.log("Request Method:", req.method); // Should be POST
+	console.log("Request Body:", req.body); // Should contain email and password
 	const { email, password } = req.body;
 
 	// Basic validation
@@ -96,48 +122,58 @@ app.post("/api/signin", async (req, res) => {
 		return res.status(400).json({ error: "Email and password are required" });
 	}
 
-	const connection = await getConnectionWithRetry();
-	try {
-		// Query the database to check if the email exists
-		const query = "SELECT * FROM users WHERE email = ?";
-		const [results] = await connection.query(query, [email]);
+	// Query the database to check if the email exists
+	const query = "SELECT * FROM users WHERE email = ?";
+	connection.query(query, [email], (err, results) => {
+		if (err) {
+			return res
+				.status(500)
+				.json({ error: "Database error", details: err.message });
+		}
 
 		if (results.length === 0) {
 			return res.status(400).json({ error: "Invalid email or password" });
 		}
 
+		// Get the user from the database (we expect only one result)
 		const user = results[0];
 
 		// Compare the entered password with the hashed password in the database
-		const isMatch = await bcrypt.compare(password, user.password_hash);
-		if (!isMatch) {
-			return res.status(400).json({ error: "Invalid email or password" });
-		}
+		bcrypt.compare(password, user.password_hash, (err, isMatch) => {
+			if (err) {
+				return res
+					.status(500)
+					.json({ error: "Error comparing passwords", details: err.message });
+			}
 
-		// If passwords match, return success response
-		res.status(200).json({
-			message: "Sign-in successful",
-			userId: user.id,
-			firstName: user.first_name,
-			lastName: user.last_name,
-			email: user.email,
+			if (!isMatch) {
+				return res.status(400).json({ error: "Invalid email or password" });
+			}
+
+			// If passwords match, return success response
+			res.status(200).json({
+				message: "Sign-in successful",
+				userId: user.id,
+				firstName: user.first_name,
+				lastName: user.last_name,
+				email: user.email,
+			});
 		});
-	} catch (err) {
-		console.error("Database error:", err);
-		res.status(500).json({ error: "Database error", details: err.message });
-	} finally {
-		connection.release(); // Release connection back to the pool
-	}
+	});
 });
 
-// Get all products
-app.get("/api/products", async (req, res) => {
-	const connection = await getConnectionWithRetry();
+// get all products
+app.get("/api/products", (req, res) => {
+	const query = "SELECT * FROM products";
 
-	try {
-		const query = "SELECT * FROM products";
-
-		const [results] = await connection.query(query);
+	connection.query(query, (err, results) => {
+		if (err) {
+			console.error("Error retrieving products:", err.stack);
+			return res.status(500).json({
+				error: "Error retrieving products",
+				details: err.message,
+			});
+		}
 
 		console.log(`Retrieved ${results.length} products`);
 
@@ -146,221 +182,118 @@ app.get("/api/products", async (req, res) => {
 			console.log("First Product:", results[0]);
 		}
 
-		// Optional: Process results if needed
-		const processedProducts = results.map((product) => ({
-			...product,
-			// Example of additional processing
-			specifications: product.specs ? JSON.parse(product.specs) : null,
-			// Format price to ensure consistent decimal representation
-			price: parseFloat(product.price).toFixed(2),
-		}));
-
-		res.json(processedProducts);
-	} catch (err) {
-		console.error("Error retrieving products:", err.stack);
-		res.status(500).json({
-			error: "Error retrieving products",
-			details: err.message,
-			stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+		res.json(results);
+	});
 });
-app.post("/api/cart", async (req, res) => {
+
+/// In your Express backend:
+app.post("/api/cart", (req, res) => {
 	const { user_id, product_id, quantity } = req.body;
 
 	// Basic validation
 	if (!user_id || !product_id || !quantity) {
-		return res.status(400).json({
-			error: "User ID, Product ID, and Quantity are required",
-		});
+		return res
+			.status(400)
+			.json({ error: "User ID, Product ID, and Quantity are required" });
 	}
 
-	const connection = await getConnectionWithRetry();
+	// Check if the product already exists in the cart for the given user
+	const checkQuery = "SELECT * FROM cart WHERE user_id = ? AND product_id = ?";
+	connection.query(checkQuery, [user_id, product_id], (err, results) => {
+		if (err) {
+			return res
+				.status(500)
+				.json({ error: "Database error", details: err.message });
+		}
 
-	try {
-		// Check if the product already exists in the cart for the given user
-		const [existingCartItems] = await connection.query(
-			"SELECT * FROM cart WHERE user_id = ? AND product_id = ?",
-			[user_id, product_id]
-		);
-
-		if (existingCartItems.length > 0) {
+		if (results.length > 0) {
 			// If the product already exists in the cart, add the new quantity to the existing quantity
-			const newQuantity = existingCartItems[0].quantity + quantity;
+			const newQuantity = results[0].quantity + quantity; // Increment the quantity
 
-			// Update the quantity
-			await connection.query(
-				"UPDATE cart SET quantity = ? WHERE user_id = ? AND product_id = ?",
-				[newQuantity, user_id, product_id]
+			const updateQuery =
+				"UPDATE cart SET quantity = ? WHERE user_id = ? AND product_id = ?";
+			connection.query(
+				updateQuery,
+				[newQuantity, user_id, product_id],
+				(err, updateResults) => {
+					if (err) {
+						return res
+							.status(500)
+							.json({ error: "Error updating cart", details: err.message });
+					}
+
+					res.status(200).json({
+						message: "Cart updated successfully",
+						cartItem: {
+							user_id,
+							product_id,
+							quantity: newQuantity, // Return the updated quantity
+						},
+					});
+				}
 			);
-
-			res.status(200).json({
-				message: "Cart updated successfully",
-				cartItem: {
-					user_id,
-					product_id,
-					quantity: newQuantity,
-				},
-			});
 		} else {
 			// If the product doesn't exist in the cart, add it with the specified quantity
-			await connection.query(
-				"INSERT INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?)",
-				[user_id, product_id, quantity]
-			);
+			const insertQuery =
+				"INSERT INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?)";
+			connection.query(
+				insertQuery,
+				[user_id, product_id, quantity],
+				(err, insertResults) => {
+					if (err) {
+						return res
+							.status(500)
+							.json({ error: "Error adding to cart", details: err.message });
+					}
 
-			res.status(200).json({
-				message: "Product added to cart successfully",
-				cartItem: {
-					user_id,
-					product_id,
-					quantity,
-				},
-			});
+					res.status(200).json({
+						message: "Product added to cart successfully",
+						cartItem: {
+							user_id,
+							product_id,
+							quantity,
+						},
+					});
+				}
+			);
 		}
-	} catch (err) {
-		console.error("Cart Error:", err);
-		res.status(500).json({
-			error: "Failed to manage cart",
-			details: err.message,
-			stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+	});
 });
 
-// Enhanced version with additional checks
-app.post("/api/cart", async (req, res) => {
-	const { user_id, product_id, quantity } = req.body;
-
-	// Comprehensive validation
-	if (!user_id || !product_id || !quantity) {
-		return res.status(400).json({
-			error: "User ID, Product ID, and Quantity are required",
-		});
-	}
-
-	// Validate quantity
-	const parsedQuantity = parseInt(quantity, 10);
-	if (isNaN(parsedQuantity) || parsedQuantity <= 0) {
-		return res.status(400).json({
-			error: "Quantity must be a positive number",
-		});
-	}
-
-	const connection = await getConnectionWithRetry();
-
-	try {
-		// Start a transaction
-		await connection.beginTransaction();
-
-		// Verify product exists
-		const [productCheck] = await connection.query(
-			"SELECT id FROM products WHERE id = ?",
-			[product_id]
-		);
-
-		if (productCheck.length === 0) {
-			await connection.rollback();
-			return res.status(404).json({
-				error: "Product not found",
-			});
-		}
-
-		// Check if the product already exists in the cart
-		const [existingCartItems] = await connection.query(
-			"SELECT * FROM cart WHERE user_id = ? AND product_id = ?",
-			[user_id, product_id]
-		);
-
-		let result;
-		if (existingCartItems.length > 0) {
-			// Calculate new quantity
-			const newQuantity = existingCartItems[0].quantity + parsedQuantity;
-
-			// Update existing cart item
-			await connection.query(
-				"UPDATE cart SET quantity = ? WHERE user_id = ? AND product_id = ?",
-				[newQuantity, user_id, product_id]
-			);
-
-			result = {
-				message: "Cart updated successfully",
-				cartItem: {
-					user_id,
-					product_id,
-					quantity: newQuantity,
-				},
-			};
-		} else {
-			// Insert new cart item
-			await connection.query(
-				"INSERT INTO cart (user_id, product_id, quantity) VALUES (?, ?, ?)",
-				[user_id, product_id, parsedQuantity]
-			);
-
-			result = {
-				message: "Product added to cart successfully",
-				cartItem: {
-					user_id,
-					product_id,
-					quantity: parsedQuantity,
-				},
-			};
-		}
-
-		// Commit the transaction
-		await connection.commit();
-
-		res.status(200).json(result);
-	} catch (err) {
-		// Rollback the transaction in case of error
-		await connection.rollback();
-
-		console.error("Cart Management Error:", err);
-		res.status(500).json({
-			error: "Failed to manage cart",
-			details: err.message,
-			stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
-		});
-	} finally {
-		// Always release the connection
-		connection.release();
-	}
-});
-
-app.get("/api/cart/:userId", async (req, res) => {
+// GET Cart - Fetches the user's cart
+// Cart route
+app.get("/api/cart/:userId", (req, res) => {
 	const userId = req.params.userId;
-	console.log("Fetching cart for user", userId);
+	"Fetching cart for user", userId;
 
 	if (!userId) {
 		return res.status(400).json({ error: "User ID is required" });
 	}
 
-	const connection = await getConnectionWithRetry();
+	// Updated query to join with products to get full product details
+	const query = `
+        SELECT 
+            c.product_id, 
+            c.quantity, 
+            p.name, 
+            p.price, 
+            p.image
+        FROM 
+            cart c
+        JOIN 
+            products p ON c.product_id = p.id
+        WHERE 
+            c.user_id = ?
+    `;
 
-	try {
-		const query = `
-            SELECT 
-                c.product_id, 
-                c.quantity, 
-                p.name, 
-                p.price, 
-                p.image
-            FROM 
-                cart c
-            JOIN 
-                products p ON c.product_id = p.id
-            WHERE 
-                c.user_id = ?
-        `;
-
-		const [results] = await connection.query(query, [userId]);
+	connection.query(query, [userId], (err, results) => {
+		if (err) {
+			console.error("Database error:", err);
+			return res.status(500).json({
+				error: "Error fetching cart",
+				details: err.message,
+			});
+		}
 
 		// If no items in cart
 		if (results.length === 0) {
@@ -382,19 +315,11 @@ app.get("/api/cart/:userId", async (req, res) => {
 			totalItems: results.length,
 			totalValue: totalValue.toFixed(2),
 		});
-	} catch (err) {
-		console.error("Database error:", err);
-		res.status(500).json({
-			error: "Error fetching cart",
-			details: err.message,
-			stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+	});
 });
-app.post("/api/cart/update", async (req, res) => {
+
+// Cart Update Endpoint
+app.post("/api/cart/update", (req, res) => {
 	const { userId, productId, quantity } = req.body;
 
 	if (!userId || !productId || quantity === undefined) {
@@ -403,52 +328,52 @@ app.post("/api/cart/update", async (req, res) => {
 			.json({ error: "User ID, Product ID, and Quantity are required" });
 	}
 
-	const connection = await getConnectionWithRetry();
-
-	try {
-		// If quantity is 0 or less, remove the item from the cart
-		if (quantity <= 0) {
-			const [result] = await connection.query(
-				"DELETE FROM cart WHERE user_id = ? AND product_id = ?",
-				[userId, productId]
-			);
+	// If quantity is 0 or less, remove the item from the cart
+	if (quantity <= 0) {
+		const removeQuery = "DELETE FROM cart WHERE user_id = ? AND product_id = ?";
+		connection.query(removeQuery, [userId, productId], (err, result) => {
+			if (err) {
+				return res.status(500).json({
+					error: "Database error",
+					details: err.message,
+				});
+			}
 
 			return res.status(200).json({
 				message: "Item removed from cart successfully",
 			});
-		} else {
-			// Update or insert the cart item
-			const upsertQuery = `
-                INSERT INTO cart (user_id, product_id, quantity) 
-                VALUES (?, ?, ?) 
-                ON DUPLICATE KEY UPDATE quantity = ?
-            `;
-
-			const [result] = await connection.query(upsertQuery, [
-				userId,
-				productId,
-				quantity,
-				quantity,
-			]);
-
-			res.status(200).json({
-				message: "Cart updated successfully",
-			});
-		}
-	} catch (err) {
-		console.error("Database error:", err);
-		res.status(500).json({
-			error: "Database error",
-			details: err.message,
 		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
+	} else {
+		// Update or insert the cart item
+		const upsertQuery = `
+            INSERT INTO cart (user_id, product_id, quantity) 
+            VALUES (?, ?, ?) 
+            ON DUPLICATE KEY UPDATE quantity = ?
+        `;
+
+		connection.query(
+			upsertQuery,
+			[userId, productId, quantity, quantity],
+			(err, result) => {
+				if (err) {
+					return res.status(500).json({
+						error: "Database error",
+						details: err.message,
+					});
+				}
+
+				res.status(200).json({
+					message: "Cart updated successfully",
+				});
+			}
+		);
 	}
 });
-app.delete("/api/cart/remove", async (req, res) => {
+
+// Ensure the route matches exactly
+app.delete("/api/cart/remove", (req, res) => {
 	const { userId, productId } = req.body;
-	console.log("Removing item from cart", userId, productId);
+	"Removing item from cart", userId, productId;
 
 	if (!userId || !productId) {
 		return res
@@ -456,11 +381,14 @@ app.delete("/api/cart/remove", async (req, res) => {
 			.json({ error: "User ID and Product ID are required" });
 	}
 
-	const connection = await getConnectionWithRetry();
-
-	try {
-		const removeQuery = "DELETE FROM cart WHERE user_id = ? AND product_id = ?";
-		const [result] = await connection.query(removeQuery, [userId, productId]);
+	const removeQuery = "DELETE FROM cart WHERE user_id = ? AND product_id = ?";
+	connection.query(removeQuery, [userId, productId], (err, result) => {
+		if (err) {
+			return res.status(500).json({
+				error: "Database error",
+				details: err.message,
+			});
+		}
 
 		// Check if any rows were actually deleted
 		if (result.affectedRows === 0) {
@@ -473,19 +401,11 @@ app.delete("/api/cart/remove", async (req, res) => {
 			message: "Item removed from cart successfully",
 			deletedRows: result.affectedRows,
 		});
-	} catch (err) {
-		console.error("Database error:", err);
-		res.status(500).json({
-			error: "Database error",
-			details: err.message,
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+	});
 });
 
-app.post("/api/cart/details", async (req, res) => {
+// Get Cart Details Endpoint
+app.post("/api/cart/details", (req, res) => {
 	const { userId, productIds } = req.body;
 
 	if (!userId || !productIds || !Array.isArray(productIds)) {
@@ -494,122 +414,155 @@ app.post("/api/cart/details", async (req, res) => {
 			.json({ error: "User ID and Product IDs are required" });
 	}
 
-	const connection = await getConnectionWithRetry();
+	// Get cart items with product details
+	const query = `
+        SELECT 
+            p.id, 
+            p.name, 
+            p.description, 
+            p.price, 
+            p.image, 
+            c.quantity
+        FROM cart c
+        JOIN products p ON c.product_id = p.id
+        WHERE c.user_id = ? AND p.id IN (?)
+    `;
 
-	try {
-		// Get cart items with product details
-		const query = `
-            SELECT 
-                p.id, 
-                p.name, 
-                p.description, 
-                p.price, 
-                p.image, 
-                c.quantity
-            FROM cart c
-            JOIN products p ON c.product_id = p.id
-            WHERE c.user_id = ? AND p.id IN (?)
-        `;
-
-		const [results] = await connection.query(query, [userId, productIds]);
+	connection.query(query, [userId, productIds], (err, results) => {
+		if (err) {
+			return res.status(500).json({
+				error: "Database error",
+				details: err.message,
+			});
+		}
 
 		res.status(200).json(results);
-	} catch (err) {
-		console.error("Database error:", err);
-		res.status(500).json({
-			error: "Database error",
-			details: err.message,
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+	});
 });
-app.post("/api/orders/place", async (req, res) => {
+
+// Place Order Endpoint
+app.post("/api/orders/place", (req, res) => {
 	const { userId, items } = req.body;
 
 	if (!userId || !items || items.length === 0) {
 		return res.status(400).json({ error: "User ID and items are required" });
 	}
 
-	const connection = await getConnectionWithRetry();
+	// Start a transaction
+	connection.beginTransaction((err) => {
+		if (err) {
+			return res.status(500).json({
+				error: "Transaction start failed",
+				details: err.message,
+			});
+		}
 
-	try {
-		// Start a transaction
-		await connection.beginTransaction();
+		// Insert order
+		const orderQuery =
+			"INSERT INTO orders (user_id, order_date, total_amount) VALUES (?, NOW(), ?)";
 
 		// Calculate total amount
 		const totalAmount = items.reduce((total, item) => {
 			return total + item.price * item.quantity;
 		}, 0);
 
-		// Insert order
-		const [orderResult] = await connection.query(
-			"INSERT INTO orders (user_id, order_date, total_amount) VALUES (?, NOW(), ?)",
-			[userId, totalAmount]
-		);
+		connection.query(orderQuery, [userId, totalAmount], (err, orderResult) => {
+			if (err) {
+				return connection.rollback(() => {
+					res.status(500).json({
+						error: "Failed to create order",
+						details: err.message,
+					});
+				});
+			}
 
-		const orderId = orderResult.insertId;
+			const orderId = orderResult.insertId;
 
-		// Prepare order items
-		const orderItemsQuery =
-			"INSERT INTO order_items (order_id, product_id, quantity, price) VALUES ?";
-		const orderItemsValues = items.map((item) => [
-			orderId,
-			item.id,
-			item.quantity,
-			item.price,
-		]);
+			// Prepare order items
+			const orderItemsQuery =
+				"INSERT INTO order_items (order_id, product_id, quantity, price) VALUES ?";
+			const orderItemsValues = items.map((item) => [
+				orderId,
+				item.id,
+				item.quantity,
+				item.price,
+			]);
 
-		await connection.query(orderItemsQuery, [orderItemsValues]);
+			connection.query(
+				orderItemsQuery,
+				[orderItemsValues],
+				(err, orderItemsResult) => {
+					if (err) {
+						return connection.rollback(() => {
+							res.status(500).json({
+								error: "Failed to add order items",
+								details: err.message,
+							});
+						});
+					}
 
-		// Remove items from cart
-		await connection.query("DELETE FROM cart WHERE user_id = ?", [userId]);
+					// Remove items from cart
+					const removeCartQuery = "DELETE FROM cart WHERE user_id = ?";
+					connection.query(removeCartQuery, [userId], (err, removeResult) => {
+						if (err) {
+							return connection.rollback(() => {
+								res.status(500).json({
+									error: "Failed to clear cart",
+									details: err.message,
+								});
+							});
+						}
 
-		// Commit the transaction
-		await connection.commit();
+						// Commit the transaction
+						connection.commit((err) => {
+							if (err) {
+								return connection.rollback(() => {
+									res.status(500).json({
+										error: "Transaction commit failed",
+										details: err.message,
+									});
+								});
+							}
 
-		res.status(200).json({
-			message: "Order placed successfully",
-			orderId: orderId,
+							res.status(200).json({
+								message: "Order placed successfully",
+								orderId: orderId,
+							});
+						});
+					});
+				}
+			);
 		});
-	} catch (err) {
-		// Rollback the transaction in case of any error
-		await connection.rollback();
-
-		console.error("Order placement error:", err);
-		res.status(500).json({
-			error: "Failed to place order",
-			details: err.message,
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+	});
 });
-app.get("/api/orders", async (req, res) => {
+
+// Get User Orders Endpoint
+app.get("/api/orders", (req, res) => {
 	const { userId } = req.query;
 
 	if (!userId) {
 		return res.status(400).json({ error: "User ID is required" });
 	}
 
-	const connection = await getConnectionWithRetry();
+	// First, get the orders
+	const ordersQuery = `
+        SELECT 
+            o.id AS order_id, 
+            o.order_date, 
+            o.total_amount
+        FROM orders o
+        WHERE o.user_id = ?
+        ORDER BY o.order_date DESC
+    `;
 
-	try {
-		// First, get the orders
-		const [orderResults] = await connection.query(
-			`
-            SELECT 
-                o.id AS order_id, 
-                o.order_date, 
-                o.total_amount
-            FROM orders o
-            WHERE o.user_id = ?
-            ORDER BY o.order_date DESC
-        `,
-			[userId]
-		);
+	connection.query(ordersQuery, [userId], (err, orderResults) => {
+		if (err) {
+			console.error("Orders Query Error:", err);
+			return res.status(500).json({
+				error: "Failed to retrieve orders",
+				details: err.message,
+			});
+		}
 
 		// If no orders found, return empty array
 		if (orderResults.length === 0) {
@@ -620,8 +573,7 @@ app.get("/api/orders", async (req, res) => {
 		const orderIds = orderResults.map((order) => order.order_id);
 
 		// Get order items for all orders in one query
-		const [itemResults] = await connection.query(
-			`
+		const itemsQuery = `
             SELECT 
                 oi.order_id,
                 oi.product_id,
@@ -632,46 +584,47 @@ app.get("/api/orders", async (req, res) => {
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             WHERE oi.order_id IN (?)
-        `,
-			[orderIds]
-		);
+        `;
 
-		// Group items by order
-		const orderItemsMap = itemResults.reduce((acc, item) => {
-			if (!acc[item.order_id]) {
-				acc[item.order_id] = [];
+		connection.query(itemsQuery, [orderIds], (itemErr, itemResults) => {
+			if (itemErr) {
+				console.error("Items Query Error:", itemErr);
+				return res.status(500).json({
+					error: "Failed to retrieve order items",
+					details: itemErr.message,
+				});
 			}
-			acc[item.order_id].push({
-				product_id: item.product_id,
-				name: item.name,
-				price: parseFloat(item.price),
-				quantity: item.quantity,
-				image: item.image,
-			});
-			return acc;
-		}, {});
 
-		// Combine orders with their items
-		const processedOrders = orderResults.map((order) => ({
-			id: `ORD-${order.order_id}`,
-			date: new Date(order.order_date).toISOString().split("T")[0],
-			total: parseFloat(order.total_amount),
-			items: orderItemsMap[order.order_id] || [],
-		}));
+			// Group items by order
+			const orderItemsMap = itemResults.reduce((acc, item) => {
+				if (!acc[item.order_id]) {
+					acc[item.order_id] = [];
+				}
+				acc[item.order_id].push({
+					product_id: item.product_id,
+					name: item.name,
+					price: parseFloat(item.price),
+					quantity: item.quantity,
+					image: item.image,
+				});
+				return acc;
+			}, {});
 
-		res.status(200).json(processedOrders);
-	} catch (err) {
-		console.error("Orders Query Error:", err);
-		res.status(500).json({
-			error: "Failed to retrieve orders",
-			details: err.message,
+			// Combine orders with their items
+			const processedOrders = orderResults.map((order) => ({
+				id: `ORD-${order.order_id}`,
+				date: new Date(order.order_date).toISOString().split("T")[0],
+				total: parseFloat(order.total_amount),
+				items: orderItemsMap[order.order_id] || [],
+			}));
+
+			res.status(200).json(processedOrders);
 		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+	});
 });
-app.get("/api/orders/:orderId", async (req, res) => {
+
+// Single Order Details Endpoint
+app.get("/api/orders/:orderId", (req, res) => {
 	const { orderId } = req.params;
 	const { userId } = req.query;
 
@@ -682,29 +635,34 @@ app.get("/api/orders/:orderId", async (req, res) => {
 	// Extract numeric ID from formatted order ID
 	const numericOrderId = orderId.replace("ORD-", "");
 
-	const connection = await getConnectionWithRetry();
+	// First, get the order details
+	const orderQuery = `
+        SELECT 
+            o.id AS order_id, 
+            o.order_date, 
+            o.total_amount
+        FROM orders o
+        WHERE o.id = ? AND o.user_id = ?
+    `;
 
-	try {
-		// First, get the order details
-		const [orderResults] = await connection.query(
-			`
-            SELECT 
-                o.id AS order_id, 
-                o.order_date, 
-                o.total_amount
-            FROM orders o
-            WHERE o.id = ? AND o.user_id = ?
-        `,
-			[numericOrderId, userId]
-		);
+	connection.query(
+		orderQuery,
+		[numericOrderId, userId],
+		(err, orderResults) => {
+			if (err) {
+				console.error("Order Query Error:", err);
+				return res.status(500).json({
+					error: "Failed to retrieve order details",
+					details: err.message,
+				});
+			}
 
-		if (orderResults.length === 0) {
-			return res.status(404).json({ error: "Order not found" });
-		}
+			if (orderResults.length === 0) {
+				return res.status(404).json({ error: "Order not found" });
+			}
 
-		// Get order items
-		const [itemResults] = await connection.query(
-			`
+			// Get order items
+			const itemsQuery = `
             SELECT 
                 oi.product_id,
                 p.name,
@@ -714,37 +672,38 @@ app.get("/api/orders/:orderId", async (req, res) => {
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             WHERE oi.order_id = ?
-        `,
-			[numericOrderId]
-		);
+        `;
 
-		const order = orderResults[0];
-		const processedOrder = {
-			id: `ORD-${order.order_id}`,
-			date: new Date(order.order_date).toISOString().split("T")[0],
-			total: parseFloat(order.total_amount),
-			items: itemResults.map((item) => ({
-				product_id: item.product_id,
-				name: item.name,
-				price: parseFloat(item.price),
-				quantity: item.quantity,
-				image: item.image,
-			})),
-		};
+			connection.query(itemsQuery, [numericOrderId], (itemErr, itemResults) => {
+				if (itemErr) {
+					console.error("Items Query Error:", itemErr);
+					return res.status(500).json({
+						error: "Failed to retrieve order items",
+						details: itemErr.message,
+					});
+				}
 
-		res.status(200).json(processedOrder);
-	} catch (err) {
-		console.error("Order Details Query Error:", err);
-		res.status(500).json({
-			error: "Failed to retrieve order details",
-			details: err.message,
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+				const order = orderResults[0];
+				const processedOrder = {
+					id: `ORD-${order.order_id}`,
+					date: new Date(order.order_date).toISOString().split("T")[0],
+					total: parseFloat(order.total_amount),
+					items: itemResults.map((item) => ({
+						product_id: item.product_id,
+						name: item.name,
+						price: parseFloat(item.price),
+						quantity: item.quantity,
+						image: item.image,
+					})),
+				};
+
+				res.status(200).json(processedOrder);
+			});
+		}
+	);
 });
-app.put("/api/cart/update-quantity", async (req, res) => {
+
+app.put("/api/cart/update-quantity", (req, res) => {
 	const { userId, productId, quantity } = req.body;
 
 	if (!userId || !productId || quantity === undefined) {
@@ -761,73 +720,77 @@ app.put("/api/cart/update-quantity", async (req, res) => {
 		});
 	}
 
-	const connection = await getConnectionWithRetry();
+	// Update query to modify the quantity for a specific cart item
+	const updateQuery = `
+        UPDATE cart 
+        SET quantity = ? 
+        WHERE user_id = ? AND product_id = ?
+    `;
 
-	try {
-		// Update query to modify the quantity for a specific cart item
-		const [result] = await connection.query(
-			`
-            UPDATE cart 
-            SET quantity = ? 
-            WHERE user_id = ? AND product_id = ?
-        `,
-			[parsedQuantity, userId, productId]
-		);
+	connection.query(
+		updateQuery,
+		[parsedQuantity, userId, productId],
+		(err, result) => {
+			if (err) {
+				return res.status(500).json({
+					error: "Database error",
+					details: err.message,
+				});
+			}
 
-		// Check if any rows were actually updated
-		if (result.affectedRows === 0) {
-			return res.status(404).json({
-				error: "Cart item not found",
+			// Check if any rows were actually updated
+			if (result.affectedRows === 0) {
+				return res.status(404).json({
+					error: "Cart item not found",
+				});
+			}
+
+			res.status(200).json({
+				message: "Cart item quantity updated successfully",
+				updatedQuantity: parsedQuantity,
 			});
 		}
-
-		res.status(200).json({
-			message: "Cart item quantity updated successfully",
-			updatedQuantity: parsedQuantity,
-		});
-	} catch (err) {
-		console.error("Database error:", err);
-		res.status(500).json({
-			error: "Database error",
-			details: err.message,
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+	);
 });
-app.get("/api/orders/:orderId", async (req, res) => {
+
+// Get Single Order Details
+
+app.get("/api/orders/:orderId", (req, res) => {
 	const { orderId } = req.params;
 	const { userId } = req.query;
 
-	console.log("Received Order Request:", { orderId, userId });
+	"Received Order Request:", { orderId, userId };
 
 	if (!userId || !orderId) {
 		return res.status(400).json({ error: "User ID and Order ID are required" });
 	}
 
-	const connection = await getConnectionWithRetry();
+	// Basic SQL query to fetch order and associated items
+	const query = `
+        SELECT 
+            o.id AS order_id, 
+            o.order_date, 
+            o.total_amount,
+            oi.product_id,
+            p.name AS product_name,
+            oi.quantity,
+            oi.price,
+            p.image AS product_image
+        FROM orders o
+        JOIN order_items oi ON o.id = oi.order_id
+        JOIN products p ON oi.product_id = p.id
+        WHERE o.id = ? AND o.user_id = ?
+    `;
 
-	try {
-		// Basic SQL query to fetch order and associated items
-		const [results] = await connection.query(
-			`
-            SELECT 
-                o.id AS order_id, 
-                o.order_date, 
-                o.total_amount,
-                oi.product_id,
-                p.name AS product_name,
-                oi.quantity,
-                oi.price,
-                p.image AS product_image
-            FROM orders o
-            JOIN order_items oi ON o.id = oi.order_id
-            JOIN products p ON oi.product_id = p.id
-            WHERE o.id = ? AND o.user_id = ?
-        `,
-			[orderId, userId]
-		);
+	connection.query(query, [orderId, userId], (err, results) => {
+		if (err) {
+			console.error("Database Error:", err);
+			return res.status(500).json({
+				error: "Failed to retrieve order details",
+				details: err.message,
+				stack: err.stack,
+			});
+		}
 
 		if (results.length === 0) {
 			console.warn(`No order found for ID ${orderId} and User ${userId}`);
@@ -838,63 +801,59 @@ app.get("/api/orders/:orderId", async (req, res) => {
 			});
 		}
 
-		// Constructing order details and items directly
-		const order = results[0];
-		const orderDetails = {
-			id: `ORD-${order.order_id}`,
-			date: new Date(order.order_date).toISOString().split("T")[0],
-			total: parseFloat(order.total_amount),
-			items: results.map((item) => ({
-				product_id: item.product_id,
-				name: item.product_name,
-				quantity: item.quantity,
-				price: parseFloat(item.price),
-				image: item.product_image,
-			})),
-		};
+		try {
+			// Constructing order details and items directly
+			const order = results[0];
+			const orderDetails = {
+				order_id: order.order_id,
+				order_date: new Date(order.order_date).toISOString(),
+				total_amount: order.total_amount,
+				items: results.map((item) => ({
+					product_id: item.product_id,
+					product_name: item.product_name,
+					quantity: item.quantity,
+					price: item.price,
+					product_image: item.product_image,
+				})),
+			};
 
-		res.status(200).json(orderDetails);
-	} catch (err) {
-		console.error("Order Details Error:", {
-			message: err.message,
-			stack: err.stack,
-			orderId,
-			userId,
-		});
-
-		res.status(500).json({
-			error: "Failed to retrieve order details",
-			details: err.message,
-			...(process.env.NODE_ENV === "development" && { stack: err.stack }),
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+			res.status(200).json(orderDetails);
+		} catch (parseError) {
+			console.error("Parsing Error:", parseError);
+			res.status(500).json({
+				error: "Failed to parse order details",
+				details: parseError.message,
+			});
+		}
+	});
 });
-app.get("/api/orders", async (req, res) => {
+
+app.get("/api/orders", (req, res) => {
 	const { userId } = req.query;
 
 	if (!userId) {
 		return res.status(400).json({ error: "User ID is required" });
 	}
 
-	const connection = await getConnectionWithRetry();
+	// First, get the orders
+	const ordersQuery = `
+        SELECT 
+            o.id AS order_id, 
+            o.order_date, 
+            o.total_amount
+        FROM orders o
+        WHERE o.user_id = ?
+        ORDER BY o.order_date DESC
+    `;
 
-	try {
-		// First, get the orders
-		const [orderResults] = await connection.query(
-			`
-            SELECT 
-                o.id AS order_id, 
-                o.order_date, 
-                o.total_amount
-            FROM orders o
-            WHERE o.user_id = ?
-            ORDER BY o.order_date DESC
-        `,
-			[userId]
-		);
+	connection.query(ordersQuery, [userId], (err, orderResults) => {
+		if (err) {
+			console.error("Database Error:", err);
+			return res.status(500).json({
+				error: "Failed to retrieve orders",
+				details: err.message,
+			});
+		}
 
 		// If no orders found, return empty array
 		if (orderResults.length === 0) {
@@ -905,8 +864,7 @@ app.get("/api/orders", async (req, res) => {
 		const orderIds = orderResults.map((order) => order.order_id);
 
 		// Get order items for all orders in one query
-		const [itemResults] = await connection.query(
-			`
+		const itemsQuery = `
             SELECT 
                 oi.order_id,
                 oi.product_id,
@@ -917,53 +875,47 @@ app.get("/api/orders", async (req, res) => {
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             WHERE oi.order_id IN (?)
-        `,
-			[orderIds]
-		);
+        `;
 
-		// Group items by order
-		const orderItemsMap = itemResults.reduce((acc, item) => {
-			if (!acc[item.order_id]) {
-				acc[item.order_id] = [];
+		connection.query(itemsQuery, [orderIds], (itemErr, itemResults) => {
+			if (itemErr) {
+				console.error("Items Fetch Error:", itemErr);
+				return res.status(500).json({
+					error: "Failed to retrieve order items",
+					details: itemErr.message,
+				});
 			}
-			acc[item.order_id].push({
-				product_id: item.product_id,
-				name: item.name,
-				price: parseFloat(item.price),
-				quantity: item.quantity,
-				image: item.image,
-			});
-			return acc;
-		}, {});
 
-		// Combine orders with their items
-		const processedOrders = orderResults.map((order) => ({
-			id: `ORD-${order.order_id}`,
-			date: new Date(order.order_date).toISOString().split("T")[0],
-			total: parseFloat(order.total_amount),
-			items: orderItemsMap[order.order_id] || [],
-		}));
+			// Group items by order
+			const orderItemsMap = itemResults.reduce((acc, item) => {
+				if (!acc[item.order_id]) {
+					acc[item.order_id] = [];
+				}
+				acc[item.order_id].push({
+					product_id: item.product_id,
+					name: item.name,
+					price: parseFloat(item.price),
+					quantity: item.quantity,
+					image: item.image,
+				});
+				return acc;
+			}, {});
 
-		res.status(200).json(processedOrders);
-	} catch (err) {
-		console.error("Orders Retrieval Error:", {
-			message: err.message,
-			stack: err.stack,
-			userId,
+			// Combine orders with their items
+			const processedOrders = orderResults.map((order) => ({
+				id: `ORD-${order.order_id}`,
+				date: new Date(order.order_date).toISOString().split("T")[0],
+				total: parseFloat(order.total_amount),
+				items: orderItemsMap[order.order_id] || [],
+			}));
+
+			res.status(200).json(processedOrders);
 		});
-
-		res.status(500).json({
-			error: "Failed to retrieve orders",
-			details: err.message,
-			...(process.env.NODE_ENV === "development" && { stack: err.stack }),
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+	});
 });
 
-app.post("/api/single-order", async (req, res) => {
+// Single Product Direct Purchase Endpoint
+app.post("/api/single-order", (req, res) => {
 	const { userId, productId, quantity } = req.body;
 
 	// Validate input
@@ -974,90 +926,118 @@ app.post("/api/single-order", async (req, res) => {
 		});
 	}
 
-	const connection = await getConnectionWithRetry();
+	// Start a database transaction
+	connection.beginTransaction((transactionError) => {
+		if (transactionError) {
+			console.error("Transaction Start Error:", transactionError);
+			return res.status(500).json({
+				error: "Transaction initialization failed",
+				details: transactionError.message,
+			});
+		}
 
-	try {
-		// Start a database transaction
-		await connection.beginTransaction();
+		// First, get the product details
+		const productQuery = `
+            SELECT id, name, price, image 
+            FROM products 
+            WHERE id = ?
+        `;
 
-		try {
-			// First, get the product details
-			const [productResults] = await connection.query(
-				`
-                SELECT id, name, price, image 
-                FROM products 
-                WHERE id = ?
-            `,
-				[productId]
-			);
+		connection.query(
+			productQuery,
+			[productId],
+			(productErr, productResults) => {
+				if (productErr || productResults.length === 0) {
+					console.error("Product Fetch Error:", productErr);
+					return connection.rollback(() => {
+						res.status(404).json({
+							error: "Product not found",
+							details: productErr?.message,
+						});
+					});
+				}
 
-			if (productResults.length === 0) {
-				throw new Error("Product not found");
-			}
+				const product = productResults[0];
+				const totalAmount = product.price * quantity;
 
-			const product = productResults[0];
-			const totalAmount = product.price * quantity;
-
-			// Insert order
-			const [orderResult] = await connection.query(
-				`
+				// Insert order
+				const orderQuery = `
                 INSERT INTO orders (user_id, order_date, total_amount) 
                 VALUES (?, NOW(), ?)
-            `,
-				[userId, totalAmount]
-			);
+            `;
 
-			const orderId = orderResult.insertId;
+				connection.query(
+					orderQuery,
+					[userId, totalAmount],
+					(orderErr, orderResult) => {
+						if (orderErr) {
+							console.error("Order Insert Error:", orderErr);
+							return connection.rollback(() => {
+								res.status(500).json({
+									error: "Failed to create order",
+									details: orderErr.message,
+								});
+							});
+						}
 
-			// Insert order items
-			await connection.query(
-				`
-                INSERT INTO order_items (order_id, product_id, quantity, price) 
-                VALUES (?, ?, ?, ?)
-            `,
-				[orderId, productId, quantity, product.price]
-			);
+						const orderId = orderResult.insertId;
 
-			// Commit the transaction
-			await connection.commit();
+						// Insert order items
+						const itemQuery = `
+                    INSERT INTO order_items (order_id, product_id, quantity, price) 
+                    VALUES (?, ?, ?, ?)
+                `;
 
-			// Successfully created order
-			res.status(201).json({
-				id: `ORD-${orderId}`,
-				userId,
-				productId,
-				quantity,
-				totalAmount: parseFloat(totalAmount.toFixed(2)),
-				orderDate: new Date().toISOString(),
-				productDetails: {
-					name: product.name,
-					image: product.image,
-				},
-			});
-		} catch (error) {
-			// Rollback the transaction in case of any error
-			await connection.rollback();
-			throw error;
-		}
-	} catch (err) {
-		console.error("Single Order Creation Error:", {
-			message: err.message,
-			stack: err.stack,
-			userId,
-			productId,
-			quantity,
-		});
+						connection.query(
+							itemQuery,
+							[orderId, productId, quantity, product.price],
+							(itemErr, itemResult) => {
+								if (itemErr) {
+									console.error("Order Item Insert Error:", itemErr);
+									return connection.rollback(() => {
+										res.status(500).json({
+											error: "Failed to add order item",
+											details: itemErr.message,
+										});
+									});
+								}
 
-		res.status(500).json({
-			error: "Failed to create order",
-			details: err.message,
-			...(process.env.NODE_ENV === "development" && { stack: err.stack }),
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+								// Commit the transaction
+								connection.commit((commitErr) => {
+									if (commitErr) {
+										console.error("Transaction Commit Error:", commitErr);
+										return connection.rollback(() => {
+											res.status(500).json({
+												error: "Transaction commit failed",
+												details: commitErr.message,
+											});
+										});
+									}
+
+									// Successfully created order
+									res.status(201).json({
+										id: `ORD-${orderId}`,
+										userId,
+										productId,
+										quantity,
+										totalAmount,
+										orderDate: new Date().toISOString(),
+										productDetails: {
+											name: product.name,
+											image: product.image,
+										},
+									});
+								});
+							}
+						);
+					}
+				);
+			}
+		);
+	});
 });
+
+//  add product
 // Add Product Endpoint
 app.post("/api/products/add", (req, res) => {
 	try {
@@ -1127,144 +1107,46 @@ app.post("/api/products/add", (req, res) => {
 		});
 	}
 });
-app.get("/api/products", async (req, res) => {
-	// Optional query parameters for filtering and pagination
-	const {
-		category,
-		minPrice,
-		maxPrice,
-		search,
-		page = 1,
-		limit = 20,
-	} = req.query;
 
-	const connection = await getConnectionWithRetry();
+// GET all products
+app.get("/api/products", (req, res) => {
+	const query = "SELECT * FROM products";
 
-	try {
-		// Construct dynamic query with optional filters
-		let query = `
-            SELECT 
-                id, 
-                name, 
-                category, 
-                description, 
-                price, 
-                image, 
-                specs AS specifications
-            FROM products
-            WHERE 1=1
-        `;
-
-		const queryParams = [];
-
-		// Add optional filters
-		if (category) {
-			query += ` AND category = ?`;
-			queryParams.push(category);
+	connection.query(query, (err, results) => {
+		if (err) {
+			console.error("Error fetching products:", err);
+			return res.status(500).json({
+				error: "Failed to fetch products",
+				details: err.message,
+			});
 		}
 
-		if (minPrice) {
-			query += ` AND price >= ?`;
-			queryParams.push(parseFloat(minPrice));
-		}
-
-		if (maxPrice) {
-			query += ` AND price <= ?`;
-			queryParams.push(parseFloat(maxPrice));
-		}
-
-		if (search) {
-			query += ` AND (name LIKE ? OR description LIKE ?)`;
-			queryParams.push(`%${search}%`, `%${search}%`);
-		}
-
-		// Add pagination
-		const offset = (page - 1) * limit;
-		query += ` LIMIT ? OFFSET ?`;
-		queryParams.push(parseInt(limit), offset);
-
-		// Get total count for pagination
-		const [countResult] = await connection.query(
-			`
-            SELECT COUNT(*) as total 
-            FROM products 
-            WHERE 1=1
-            ${category ? " AND category = ?" : ""}
-            ${minPrice ? " AND price >= ?" : ""}
-            ${maxPrice ? " AND price <= ?" : ""}
-            ${search ? " AND (name LIKE ? OR description LIKE ?)" : ""}
-        `,
-			queryParams.slice(0, -2)
-		); // Exclude LIMIT and OFFSET
-
-		const totalProducts = countResult[0].total;
-
-		// Execute the query
-		const [results] = await connection.query(query, queryParams);
-
-		// Process results
+		// Parse specifications if they're stored as JSON
 		const processedResults = results.map((product) => ({
-			id: product.id,
-			name: product.name,
-			category: product.category,
-			description: product.description,
-			price: parseFloat(product.price),
-			image: product.image,
+			...product,
 			specifications: product.specifications
-				? safeJSONParse(product.specifications)
+				? JSON.parse(product.specifications)
 				: null,
 		}));
 
-		// Send response with pagination metadata
-		res.json({
-			products: processedResults,
-			pagination: {
-				total: totalProducts,
-				page: parseInt(page),
-				limit: parseInt(limit),
-				totalPages: Math.ceil(totalProducts / limit),
-			},
-		});
-	} catch (err) {
-		console.error("Products Fetch Error:", {
-			message: err.message,
-			stack: err.stack,
-			query: req.query,
-		});
-
-		res.status(500).json({
-			error: "Failed to fetch products",
-			details: err.message,
-			...(process.env.NODE_ENV === "development" && { stack: err.stack }),
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+		res.json(processedResults);
+	});
 });
 
-// Safe JSON parsing utility function
-function safeJSONParse(jsonString) {
-	try {
-		return JSON.parse(jsonString);
-	} catch (error) {
-		console.warn("Failed to parse JSON:", {
-			input: jsonString,
-			error: error.message,
-		});
-		return null;
-	}
-}
-app.delete("/api/products/delete/:id", async (req, res) => {
+// DELETE product route
+app.delete("/api/products/delete/:id", (req, res) => {
 	const productId = req.params.id;
 
-	const connection = await getConnectionWithRetry();
+	const query = "DELETE FROM products WHERE id = ?";
 
-	try {
-		const [result] = await connection.query(
-			"DELETE FROM products WHERE id = ?",
-			[productId]
-		);
+	connection.query(query, [productId], (err, result) => {
+		if (err) {
+			console.error("Error deleting product:", err);
+			return res.status(500).json({
+				error: "Failed to delete product",
+				details: err.message,
+			});
+		}
 
 		if (result.affectedRows === 0) {
 			return res.status(404).json({ error: "Product not found" });
@@ -1274,27 +1156,23 @@ app.delete("/api/products/delete/:id", async (req, res) => {
 			message: "Product deleted successfully",
 			productId: productId,
 		});
-	} catch (err) {
-		console.error("Error deleting product:", err);
-		res.status(500).json({
-			error: "Failed to delete product",
-			details: err.message,
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+	});
 });
-app.get("/api/products/:id", async (req, res) => {
+
+// GET single product by ID
+app.get("/api/products/:id", (req, res) => {
 	const productId = req.params.id;
 
-	const connection = await getConnectionWithRetry();
+	const query = "SELECT * FROM products WHERE id = ?";
 
-	try {
-		const [results] = await connection.query(
-			"SELECT * FROM products WHERE id = ?",
-			[productId]
-		);
+	connection.query(query, [productId], (err, results) => {
+		if (err) {
+			console.error("Error fetching product:", err);
+			return res.status(500).json({
+				error: "Failed to fetch product",
+				details: err.message,
+			});
+		}
 
 		if (results.length === 0) {
 			return res.status(404).json({ error: "Product not found" });
@@ -1312,18 +1190,11 @@ app.get("/api/products/:id", async (req, res) => {
 		}
 
 		res.json(product);
-	} catch (err) {
-		console.error("Error fetching product:", err);
-		res.status(500).json({
-			error: "Failed to fetch product",
-			details: err.message,
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+	});
 });
-app.put("/api/products/update/:id", async (req, res) => {
+
+// UPDATE product route
+app.put("/api/products/update/:id", (req, res) => {
 	const productId = req.params.id;
 	const {
 		name,
@@ -1340,34 +1211,38 @@ app.put("/api/products/update/:id", async (req, res) => {
 		? JSON.stringify(specifications)
 		: null;
 
-	const connection = await getConnectionWithRetry();
+	const query = `
+        UPDATE products 
+        SET 
+            name = ?, 
+            category = ?, 
+            description = ?, 
+            fullDescription = ?, 
+            price = ?, 
+            image = ?, 
+            specs = ?
+        WHERE id = ?
+    `;
 
-	try {
-		const query = `
-            UPDATE products 
-            SET 
-                name = ?, 
-                category = ?, 
-                description = ?, 
-                fullDescription = ?, 
-                price = ?, 
-                image = ?, 
-                specs = ?
-            WHERE id = ?
-        `;
+	const values = [
+		name,
+		category,
+		description,
+		fullDescription,
+		price,
+		imagePath,
+		safeSpecifications,
+		productId,
+	];
 
-		const values = [
-			name,
-			category,
-			description,
-			fullDescription,
-			price,
-			imagePath,
-			safeSpecifications,
-			productId,
-		];
-
-		const [result] = await connection.query(query, values);
+	connection.query(query, values, (err, result) => {
+		if (err) {
+			console.error("Error updating product:", err);
+			return res.status(500).json({
+				error: "Failed to update product",
+				details: err.message,
+			});
+		}
 
 		if (result.affectedRows === 0) {
 			return res.status(404).json({ error: "Product not found" });
@@ -1377,14 +1252,5 @@ app.put("/api/products/update/:id", async (req, res) => {
 			message: "Product updated successfully",
 			productId: productId,
 		});
-	} catch (err) {
-		console.error("Error updating product:", err);
-		res.status(500).json({
-			error: "Failed to update product",
-			details: err.message,
-		});
-	} finally {
-		// Always release the connection back to the pool
-		connection.release();
-	}
+	});
 });
