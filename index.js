@@ -56,6 +56,7 @@ app.listen(PORT, () => {
 // Signup API Endpoint
 app.post("/api/signup", (req, res) => {
 	const { first_name, last_name, email, password, confirm_password } = req.body;
+	console.log("Request Method:", req.method); // Should be POST
 
 	// Basic validation
 	if (!first_name || !last_name || !email || !password || !confirm_password) {
