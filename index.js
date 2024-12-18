@@ -57,7 +57,7 @@ app.listen(PORT, () => {
 app.post("/api/signup", (req, res) => {
 	const { first_name, last_name, email, password, confirm_password } = req.body;
 	console.log("Request Method:", req.method); // Should be POST
-
+	console.log("Request Body:", req.body); // Should contain first_name, last_name, email, password, confirm_password
 	// Basic validation
 	if (!first_name || !last_name || !email || !password || !confirm_password) {
 		return res.status(400).json({ error: "All fields are required" });
@@ -165,7 +165,7 @@ app.post("/api/signin", (req, res) => {
 
 // get all products
 app.get("/api/products", (req, res) => {
-	const query = "SELECT * FROM products";
+	const query = "SELECT * FROM products WHERE is_deleted = FALSE";
 
 	connection.query(query, (err, results) => {
 		if (err) {
@@ -686,7 +686,7 @@ app.get("/api/orders/:orderId", (req, res) => {
 
 				const order = orderResults[0];
 				const processedOrder = {
-					id: `ORD-${order.order_id}`,
+					id: order.order_id,
 					date: new Date(order.order_date).toISOString().split("T")[0],
 					total: parseFloat(order.total_amount),
 					items: itemResults.map((item) => ({
@@ -1042,16 +1042,10 @@ app.post("/api/single-order", (req, res) => {
 // Add Product Endpoint
 app.post("/api/products/add", (req, res) => {
 	try {
-		const {
-			name,
-			category,
-			description,
-			fullDescription,
-			price,
-			imagePath,
-			specifications,
-		} = req.body;
+		const { name, category, description, fullDescription, price, image } =
+			req.body;
 
+		console.log("Request Method:", req.method); // Should be POST
 		// Validate required fields
 		if (!name || !category || !price) {
 			return res.status(400).json({
@@ -1060,18 +1054,11 @@ app.post("/api/products/add", (req, res) => {
 			});
 		}
 
-		// Ensure specifications is stored as JSON or NULL
-		const safeSpecifications = specifications
-			? JSON.stringify(
-					specifications.split("\n").filter((spec) => spec.trim() !== "")
-			  )
-			: null;
-
 		// Insert query
 		const insertQuery = `
 			INSERT INTO products 
-			(name, category, description, fullDescription, price, image, specs) 
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+			(name, category, description, fullDescription, price, image) 
+			VALUES (?, ?, ?, ?, ?, ?)
 		`;
 
 		const values = [
@@ -1080,14 +1067,14 @@ app.post("/api/products/add", (req, res) => {
 			description || null,
 			fullDescription || null,
 			price,
-			imagePath || null,
-			safeSpecifications,
+			image || null,
 		];
 
 		// Execute the insert query
 		connection.query(insertQuery, values, (err, result) => {
 			if (err) {
 				console.error("Database insertion error:", err);
+				console.log("Failed to add product");
 				return res.status(500).json({
 					error: "Failed to add product",
 					details: err.message,
@@ -1099,6 +1086,7 @@ app.post("/api/products/add", (req, res) => {
 				message: "Product added successfully",
 				productId: result.insertId,
 			});
+			console.log("Product added successfully");
 		});
 	} catch (error) {
 		console.error("Server error:", error);
@@ -1109,40 +1097,17 @@ app.post("/api/products/add", (req, res) => {
 	}
 });
 
-// GET all products
-app.get("/api/products", (req, res) => {
-	const query = "SELECT * FROM products";
-
-	connection.query(query, (err, results) => {
-		if (err) {
-			console.error("Error fetching products:", err);
-			return res.status(500).json({
-				error: "Failed to fetch products",
-				details: err.message,
-			});
-		}
-
-		// Parse specifications if they're stored as JSON
-		const processedResults = results.map((product) => ({
-			...product,
-			specifications: product.specifications
-				? JSON.parse(product.specifications)
-				: null,
-		}));
-
-		res.json(processedResults);
-	});
-});
-
 // DELETE product route
-app.delete("/api/products/delete/:id", (req, res) => {
+// Soft Delete product route
+app.put("/api/products/delete/:id", (req, res) => {
 	const productId = req.params.id;
 
-	const query = "DELETE FROM products WHERE id = ?";
+	// Soft delete query - update is_deleted to TRUE instead of actually deleting
+	const query = "UPDATE products SET is_deleted = TRUE WHERE id = ?";
 
 	connection.query(query, [productId], (err, result) => {
 		if (err) {
-			console.error("Error deleting product:", err);
+			console.error("Error soft deleting product:", err);
 			return res.status(500).json({
 				error: "Failed to delete product",
 				details: err.message,
@@ -1154,7 +1119,7 @@ app.delete("/api/products/delete/:id", (req, res) => {
 		}
 
 		res.json({
-			message: "Product deleted successfully",
+			message: "Product marked as deleted",
 			productId: productId,
 		});
 	});
@@ -1197,21 +1162,9 @@ app.get("/api/products/:id", (req, res) => {
 // UPDATE product route
 app.put("/api/products/update/:id", (req, res) => {
 	const productId = req.params.id;
-	const {
-		name,
-		category,
-		description,
-		fullDescription,
-		price,
-		imagePath,
-		specifications,
-	} = req.body;
-
-	// Prepare specifications
-	const safeSpecifications = specifications
-		? JSON.stringify(specifications)
-		: null;
-
+	const { name, category, description, fullDescription, price, image } =
+		req.body;
+	console.log("Request Method:", req.body); // Should be PUT
 	const query = `
         UPDATE products 
         SET 
@@ -1220,19 +1173,18 @@ app.put("/api/products/update/:id", (req, res) => {
             description = ?, 
             fullDescription = ?, 
             price = ?, 
-            image = ?, 
-            specs = ?
+            image = ?
+          
         WHERE id = ?
     `;
 
 	const values = [
 		name,
-		category,
+		category || null,
 		description,
 		fullDescription,
 		price,
-		imagePath,
-		safeSpecifications,
+		image,
 		productId,
 	];
 
